@@ -16,6 +16,7 @@ import {
   type ClaudeAccount,
 } from "./keychain.ts"
 import { resetExcludedBetas } from "./betas.ts"
+import { inspectClaudeCredentialsPath } from "./credential-guard.ts"
 import { log } from "./logger.ts"
 
 export type { ClaudeCredentials } from "./keychain.ts"
@@ -242,7 +243,24 @@ export function refreshViaOAuth(
   }
 }
 
+/**
+ * The CLI fallback shells out to `claude`, which rewrites
+ * ~/.claude/.credentials.json via temp+rename. Against a symlinked or otherwise
+ * externally-owned credentials file that silently replaces the link with a
+ * plain copy, detaching the session from its real credential source -- so gate
+ * the fallback on the same rule that governs our own writes.
+ */
+export function shouldAttemptCliRefresh(): boolean {
+  return inspectClaudeCredentialsPath().safe
+}
+
 function refreshViaCli(): void {
+  const verdict = inspectClaudeCredentialsPath()
+  if (!verdict.safe) {
+    log("refresh_skipped", { source: "cli", reason: verdict.reason })
+    return
+  }
+
   const maxAttempts = 2
   for (let i = 0; i < maxAttempts; i++) {
     log("refresh_started", { source: "cli", attempt: i + 1 })

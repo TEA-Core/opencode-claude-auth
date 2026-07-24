@@ -3,6 +3,11 @@ import { chmodSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./logger.ts"
+import {
+  claudeCredentialsPath,
+  credentialsAreWritable,
+  inspectClaudeCredentialsPath,
+} from "./credential-guard.ts"
 
 export interface ClaudeCredentials {
   accessToken: string
@@ -294,8 +299,19 @@ export function writeBackCredentials(
   }
 
   if (source === "file") {
+    if (!credentialsAreWritable(newCreds)) {
+      log("writeback_skipped", { source, reason: "incomplete_credentials" })
+      return false
+    }
+
+    const verdict = inspectClaudeCredentialsPath()
+    if (!verdict.safe) {
+      log("writeback_skipped", { source, reason: verdict.reason })
+      return false
+    }
+
     try {
-      const credPath = join(homedir(), ".claude", ".credentials.json")
+      const credPath = claudeCredentialsPath()
       const raw = readFileSync(credPath, "utf-8")
       const updated = updateCredentialBlob(raw, newCreds)
       if (!updated) return false

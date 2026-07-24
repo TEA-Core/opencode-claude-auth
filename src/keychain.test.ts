@@ -9,7 +9,7 @@ import {
   updateCredentialBlob,
   writeBackCredentials,
 } from "./keychain.ts"
-import { chmodSync, statSync } from "node:fs"
+import { chmodSync, lstatSync, statSync, symlinkSync } from "node:fs"
 import { mkdtemp } from "node:fs/promises"
 
 // Mirrors the parseCredentials logic from keychain.ts for unit testing
@@ -633,6 +633,81 @@ describe("writeBackCredentials (file source)", () => {
       } else {
         delete process.env.HOME
       }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("writeBackCredentials (mutation guard)", () => {
+  it("leaves a symlinked credentials file untouched", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-wb-link-"),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const upstream = join(tempHome, "upstream-credentials.json")
+      const original = JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "upstream-at",
+          refreshToken: "upstream-rt",
+          expiresAt: 1000,
+        },
+      })
+      writeFileSync(upstream, original)
+      const credPath = join(claudeDir, ".credentials.json")
+      symlinkSync(upstream, credPath)
+
+      const result = writeBackCredentials("file", {
+        accessToken: "new-at",
+        refreshToken: "new-rt",
+        expiresAt: Date.now() + 3_600_000,
+      })
+
+      assert.equal(result, false)
+      assert.equal(lstatSync(credPath).isSymbolicLink(), true)
+      assert.equal(readFileSync(upstream, "utf-8"), original)
+    } finally {
+      if (typeof originalHome === "string") process.env.HOME = originalHome
+      else delete process.env.HOME
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses to persist blank credentials from a failed refresh", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-wb-blank-"),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const credPath = join(claudeDir, ".credentials.json")
+      const original = JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "good-at",
+          refreshToken: "good-rt",
+          expiresAt: 1000,
+        },
+      })
+      writeFileSync(credPath, original)
+
+      const result = writeBackCredentials("file", {
+        accessToken: "",
+        refreshToken: "",
+        expiresAt: 0,
+      })
+
+      assert.equal(result, false)
+      assert.equal(readFileSync(credPath, "utf-8"), original)
+    } finally {
+      if (typeof originalHome === "string") process.env.HOME = originalHome
+      else delete process.env.HOME
       rmSync(tempHome, { recursive: true, force: true })
     }
   })

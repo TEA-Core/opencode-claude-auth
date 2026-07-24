@@ -1,7 +1,17 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { refreshViaOAuth, parseOAuthResponse } from "./credentials.ts"
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import {
+  refreshViaOAuth,
+  parseOAuthResponse,
+  shouldAttemptCliRefresh,
+} from "./credentials.ts"
+import {
+  chmodSync,
+  mkdirSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -95,6 +105,11 @@ export function __setCredentials(c) {
   await writeFile(
     tempBetas,
     `export function resetExcludedBetas() {}\n`,
+    "utf8",
+  )
+  await writeFile(
+    join(tempDir, "credential-guard.ts"),
+    await readFile(new URL("./credential-guard.ts", import.meta.url), "utf8"),
     "utf8",
   )
   await writeFile(tempCredentials, rewritten, "utf8")
@@ -414,6 +429,14 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
         "utf8",
       )
+      await writeFile(
+        join(tempDir, "credential-guard.ts"),
+        await readFile(
+          new URL("./credential-guard.ts", import.meta.url),
+          "utf8",
+        ),
+        "utf8",
+      )
       await writeFile(tempCredentials, rewritten, "utf8")
 
       const mod = await import(pathToFileURL(tempCredentials).href)
@@ -496,6 +519,14 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       await writeFile(
         tempLogger,
         `export function log() {}\nexport function initLogger() {}\nexport function closeLogger() {}\n`,
+        "utf8",
+      )
+      await writeFile(
+        join(tempDir, "credential-guard.ts"),
+        await readFile(
+          new URL("./credential-guard.ts", import.meta.url),
+          "utf8",
+        ),
         "utf8",
       )
       await writeFile(tempCredentials, rewritten, "utf8")
@@ -581,5 +612,65 @@ describe("parseOAuthResponse", () => {
 
   it("returns null for empty string", () => {
     assert.equal(parseOAuthResponse("", currentRefresh, now), null)
+  })
+})
+
+describe("shouldAttemptCliRefresh", () => {
+  async function withHome<T>(fn: (home: string) => T): Promise<T> {
+    const originalHome = process.env.HOME
+    const home = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cli-"))
+    process.env.HOME = home
+    try {
+      return fn(home)
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME
+      else process.env.HOME = originalHome
+    }
+  }
+
+  function seed(home: string): string {
+    const dir = join(home, ".claude")
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, ".credentials.json")
+    writeFileSync(path, JSON.stringify({ claudeAiOauth: {} }))
+    return path
+  }
+
+  it("allows the CLI fallback when the credentials file is ours to rewrite", async () => {
+    await withHome((home) => {
+      seed(home)
+      assert.equal(shouldAttemptCliRefresh(), true)
+    })
+  })
+
+  // `claude` rewrites ~/.claude/.credentials.json via temp+rename. Against a
+  // symlink that silently replaces the link with a plain file, detaching the
+  // session from its real credential source -- so the CLI fallback must not run
+  // at all when we would not be allowed to write the file ourselves.
+  it("suppresses the CLI fallback when the credentials file is a symlink", async () => {
+    await withHome((home) => {
+      const dir = join(home, ".claude")
+      mkdirSync(dir, { recursive: true })
+      const upstream = join(home, "upstream.json")
+      writeFileSync(upstream, "{}")
+      symlinkSync(upstream, join(dir, ".credentials.json"))
+
+      assert.equal(shouldAttemptCliRefresh(), false)
+    })
+  })
+
+  it("suppresses the CLI fallback in explicit read-only mode", async () => {
+    const original = process.env.CLAUDE_AUTH_READONLY_CREDENTIALS
+    process.env.CLAUDE_AUTH_READONLY_CREDENTIALS = "1"
+    try {
+      await withHome((home) => {
+        seed(home)
+        assert.equal(shouldAttemptCliRefresh(), false)
+      })
+    } finally {
+      if (original === undefined)
+        delete process.env.CLAUDE_AUTH_READONLY_CREDENTIALS
+      else process.env.CLAUDE_AUTH_READONLY_CREDENTIALS = original
+    }
   })
 })
