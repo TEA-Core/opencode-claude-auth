@@ -49,6 +49,20 @@ function dropTrailingThinking(message: Message): Message {
     : { ...message, content: message.content.slice(0, end) }
 }
 
+/**
+ * Anthropic requires the conversation to end with a user message ("This model
+ * does not support assistant message prefill."). Repair can strip a trailing
+ * user turn down to nothing — its only block was an unpaired tool_result —
+ * which exposes the assistant turn before it. Trim those exposed turns. Only
+ * called when the caller's own final message was a user turn, so a deliberate
+ * assistant prefill is left alone.
+ */
+function dropTrailingAssistant(messages: Message[]): Message[] {
+  let end = messages.length
+  while (end > 0 && messages[end - 1].role === "assistant") end--
+  return end === messages.length ? messages : messages.slice(0, end)
+}
+
 export function repairToolPairs(messages: Message[]): Message[] {
   // Anthropic requires every tool_use in message N to have its tool_result
   // in message N+1 — adjacency, not mere existence. /undo and /compact can
@@ -84,8 +98,10 @@ export function repairToolPairs(messages: Message[]): Message[] {
     [...resultMsgIndex.keys()].some((id) => !isAdjacentPair(id))
   if (!needsRepair) return messages
 
+  const endedOnUser = messages[messages.length - 1]?.role !== "assistant"
+
   // Drop blocks outside adjacent pairs and remove emptied messages
-  return messages
+  const repaired = messages
     .map((message, index) => {
       if (!Array.isArray(message.content)) return message
       const filtered = message.content.filter((block) => {
@@ -108,6 +124,8 @@ export function repairToolPairs(messages: Message[]): Message[] {
       (message) =>
         !(Array.isArray(message.content) && message.content.length === 0),
     )
+
+  return endedOnUser ? dropTrailingAssistant(repaired) : repaired
 }
 
 export function transformBody(

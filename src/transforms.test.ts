@@ -982,6 +982,71 @@ describe("transforms", () => {
       ])
     })
 
+    it("drops a trailing assistant turn exposed by removing an unpaired tool_result", () => {
+      // The stale tool_result is the final user turn's only block, so repair
+      // empties and removes that message. Without a guard the request then
+      // ends on the assistant turn and Anthropic rejects it with "This model
+      // does not support assistant message prefill."
+      const messages = [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "t", signature: "sig1" },
+            { type: "text", text: "done reasoning" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_nopair", content: "x" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+      ])
+    })
+
+    it("drops every trailing assistant turn exposed by repair", () => {
+      const messages = [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        { role: "assistant", content: [{ type: "text", text: "first" }] },
+        { role: "assistant", content: [{ type: "text", text: "second" }] },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_nopair", content: "x" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+      ])
+    })
+
+    it("keeps a client-supplied trailing assistant turn while repairing earlier messages", () => {
+      // The caller deliberately ended on an assistant turn; repair elsewhere
+      // must not change that shape.
+      const messages = [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_nopair", content: "x" },
+          ],
+        },
+        { role: "assistant", content: [{ type: "text", text: "prefill" }] },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        { role: "assistant", content: [{ type: "text", text: "prefill" }] },
+      ])
+    })
+
     it("does not rewrite thinking blocks when no repair is needed", () => {
       const messages = [
         {
