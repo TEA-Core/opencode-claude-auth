@@ -29,6 +29,26 @@ type Message = {
   content?: string | ContentBlock[]
 }
 
+const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
+
+/**
+ * Anthropic rejects an assistant message whose final block is `thinking`
+ * ("The final block in an assistant message cannot be `thinking`."). With
+ * interleaved-thinking enabled every assistant turn opens with a thinking
+ * block, so dropping a trailing tool_use can expose one. Trim trailing
+ * thinking blocks; a turn left empty is removed by the caller's filter.
+ */
+function dropTrailingThinking(message: Message): Message {
+  if (message.role !== "assistant" || !Array.isArray(message.content))
+    return message
+  let end = message.content.length
+  while (end > 0 && THINKING_TYPES.has(message.content[end - 1].type as string))
+    end--
+  return end === message.content.length
+    ? message
+    : { ...message, content: message.content.slice(0, end) }
+}
+
 export function repairToolPairs(messages: Message[]): Message[] {
   // Anthropic requires every tool_use in message N to have its tool_result
   // in message N+1 — adjacency, not mere existence. /undo and /compact can
@@ -83,6 +103,7 @@ export function repairToolPairs(messages: Message[]): Message[] {
       })
       return { ...message, content: filtered }
     })
+    .map(dropTrailingThinking)
     .filter(
       (message) =>
         !(Array.isArray(message.content) && message.content.length === 0),

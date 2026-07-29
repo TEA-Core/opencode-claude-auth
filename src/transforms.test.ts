@@ -7,6 +7,25 @@ import {
   transformResponseStream,
 } from "./transforms.ts"
 
+// Anthropic rejects an assistant message whose final block is `thinking`:
+// "The final block in an assistant message cannot be `thinking`." With
+// interleaved-thinking enabled every assistant turn carries a thinking block,
+// so stripping a trailing tool_use can leave one exposed.
+const assistantsEndingInThinking = (
+  messages: Array<{ role?: string; content?: unknown }>,
+) =>
+  messages.filter((message) => {
+    if (message.role !== "assistant" || !Array.isArray(message.content))
+      return false
+    const last = message.content[message.content.length - 1] as
+      | { type?: string }
+      | undefined
+    return (
+      last !== undefined &&
+      ["thinking", "redacted_thinking"].includes(last.type as string)
+    )
+  })
+
 describe("transforms", () => {
   it("transformBody moves non-core system text to user message and PascalCase-prefixes tool names", () => {
     const input = JSON.stringify({
@@ -881,6 +900,108 @@ describe("transforms", () => {
       ]
       const result = repairToolPairs(messages)
       assert.deepEqual(result, messages)
+    })
+
+    it("never leaves an assistant message ending in thinking (orphaned tool_use)", () => {
+      // Run aborted mid-tool-call: the final tool_use never got its result.
+      const messages = [
+        { role: "user", content: [{ type: "text", text: "harden the gate" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "step 1", signature: "sig1" },
+            { type: "text", text: "I'll inspect the script." },
+            { type: "tool_use", id: "toolu_paired", name: "bash" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_paired", content: "ok" },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "step 2", signature: "sig2" },
+            { type: "tool_use", id: "toolu_orphan", name: "bash" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(assistantsEndingInThinking(result), [])
+      // The degenerate turn is dropped whole; the paired turn is untouched.
+      assert.deepEqual(result, messages.slice(0, 3))
+    })
+
+    it("never leaves an assistant message ending in thinking (separated pair)", () => {
+      // Issue #212 shape: a compaction summary splits an existing pair.
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "plan", signature: "sig1" },
+            { type: "tool_use", id: "toolu_gap", name: "search" },
+          ],
+        },
+        { role: "user", content: [{ type: "text", text: "summary" }] },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_gap", content: "late" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(assistantsEndingInThinking(result), [])
+      assert.deepEqual(result, [
+        { role: "user", content: [{ type: "text", text: "summary" }] },
+      ])
+    })
+
+    it("keeps trailing text after a stripped tool_use", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "plan", signature: "sig1" },
+            { type: "text", text: "on it" },
+            { type: "tool_use", id: "toolu_orphan", name: "search" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.deepEqual(result, [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "plan", signature: "sig1" },
+            { type: "text", text: "on it" },
+          ],
+        },
+      ])
+    })
+
+    it("does not rewrite thinking blocks when no repair is needed", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "plan", signature: "sig1" },
+            { type: "text", text: "searching" },
+            { type: "tool_use", id: "toolu_valid", name: "search" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_valid", content: "ok" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      // Identity, not a rebuild: thinking blocks must be preserved verbatim.
+      assert.equal(result, messages)
     })
   })
 
