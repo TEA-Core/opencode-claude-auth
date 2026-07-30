@@ -698,6 +698,7 @@ describe("transforms", () => {
 
     it("removes tool_result blocks with no matching tool_use", () => {
       const messages = [
+        { role: "user", content: [{ type: "text", text: "hello" }] },
         {
           role: "user",
           content: [
@@ -707,7 +708,39 @@ describe("transforms", () => {
       ]
       const result = repairToolPairs(messages)
       // The user message with only the orphaned tool_result should be removed
-      assert.equal(result.length, 0)
+      assert.deepEqual(result, [
+        { role: "user", content: [{ type: "text", text: "hello" }] },
+      ])
+    })
+
+    it("passes the input through when repair would empty the array", () => {
+      // Anthropic rejects an empty messages array ("at least one message is
+      // required"), so an unsendable repair result is worse than the input:
+      // the input at least produces an error that names the real problem.
+      const messages = [
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_orphan", content: "ok" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.equal(result, messages)
+    })
+
+    it("passes the input through when only assistant turns would survive", () => {
+      const messages = [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "t", signature: "sig1" },
+            { type: "tool_use", id: "toolu_orphan", name: "search" },
+          ],
+        },
+      ]
+      const result = repairToolPairs(messages)
+      assert.equal(result, messages)
     })
 
     it("preserves text blocks when removing orphaned tool_use", () => {

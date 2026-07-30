@@ -125,7 +125,13 @@ export function repairToolPairs(messages: Message[]): Message[] {
         !(Array.isArray(message.content) && message.content.length === 0),
     )
 
-  return endedOnUser ? dropTrailingAssistant(repaired) : repaired
+  const trimmed = endedOnUser ? dropTrailingAssistant(repaired) : repaired
+
+  // Anthropic rejects an empty messages array ("at least one message is
+  // required"), so an empty repair result is unsendable. Hand back the input
+  // instead: the request still fails, but with an error that names the real
+  // problem (the unpaired tool blocks) rather than a missing conversation.
+  return trimmed.length === 0 ? messages : trimmed
 }
 
 export function transformBody(
